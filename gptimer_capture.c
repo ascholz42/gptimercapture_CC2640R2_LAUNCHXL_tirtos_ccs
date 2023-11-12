@@ -19,7 +19,7 @@
  *         weil die ISR doch viel über den Status receiver.c wissen müsste um optimal
  *         zu filtern
  *
- *  gptimercaptureV2_CC2640_LAUNCHXL_tirtos: hier ist wieder alles zusammen in einem Modul
+ *  gptimercapture_CC2640_LAUNCHXL_tirtos: hier ist wieder alles zusammen in einem Modul
  *
  *
  */
