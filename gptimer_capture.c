@@ -138,7 +138,7 @@ static void c57Handler(UArg arg){
     }
 }
 
-// Note these functions will be called in interruput handling context. Dontuse Display...
+// Note these functions will be called in interrput handling context. Dontuse Display...
 
 void shiftToNextBit() {
     bit_mask = bit_mask >> 1;
