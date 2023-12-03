@@ -21,6 +21,8 @@
  *
  *  gptimercapture_CC2640_LAUNCHXL_tirtos: hier ist wieder alles zusammen in einem Modul
  *
+ * Note: Empfang ist sehr abhängig von der Polarisierung, wenn Antenne richtig gedreht ist -> besser
+ * Projektbeispiel empty nutzt pthread.h. zur Threadgenerierung -> umgestellt auf TIRTOS Task creation
  *
  */
 
@@ -55,6 +57,9 @@
 #include <ti/sysbios/knl/Event.h>
 #include <xdc/runtime/Types.h>
 
+/* Application header */
+#include "gptimer_capture.h"
+
 // Struct for messages
 typedef struct
 {
@@ -87,6 +92,14 @@ static Event_Params eventParams;
 static Event_Handle hEvent;
 
 #define MESSAGE_EVT Event_Id_00
+
+// Task configuration
+#define GPTCapture_TASK_STACK_SIZE 1024
+Task_Struct gptCaptureTask;
+char gptTaskStack[GPTCapture_TASK_STACK_SIZE];
+// Declare the app task function
+static void GPTimerCapture_taskFxn(UArg a0, UArg a1);
+
 
 /* App data */
 volatile uint32_t ledValue = CC2640R2_LAUNCHXL_PIN_LED_ON;
@@ -319,10 +332,33 @@ void stopTimers() {
 } //end stopTimers()
 
 /*
- *  ======== mainThread ========
+ * @brief   Task creation function for the user task.
+ *
+ * @param   None.
+ *
+ * @return  None.
  */
-void *mainThread(void *arg0)
+
+void GPTimerCapture_createTask(void)
 {
+  Task_Params taskParams;
+
+  // Configure task
+  Task_Params_init(&taskParams);
+  taskParams.stack = gptTaskStack;
+  taskParams.stackSize = GPTCapture_TASK_STACK_SIZE;
+  taskParams.priority = 1;
+
+  Task_construct(&gptCaptureTask, GPTimerCapture_taskFxn, &taskParams, NULL);
+}
+
+/*
+ *  ======== mainThread ========
+ *  POSIX thread function signature
+void *GPTimerCapture_mainThread(void *arg0)
+ */
+static void GPTimerCapture_taskFxn(UArg a0, UArg a1) {
+
     /* Init Display */
     Display_Handle hDisplay;
     hDisplay = Display_open(Display_Type_UART, NULL);
