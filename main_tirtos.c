@@ -49,8 +49,7 @@
 // extern void *GPTimerCapture_mainThread(void *arg0);
 
 /* Application header */
-#include "gptimer_capture.h"
-
+extern void Receiver_createTask(void);
 /*
  *  ======== main ========
  */
@@ -61,7 +60,7 @@ int main(void) {
     // TODO: from SDK example; doesnt work; Power_setDependency(XOSC_HF);
     // Note: posix pthread.h. stuff removed....
 
-    GPTimerCapture_createTask();
+    Receiver_createTask();
 
     BIOS_start();
 

@@ -26,12 +26,9 @@
  *
  */
 
-/* For usleep() */
-#include <unistd.h>
-#include <stdint.h>
-#include <stddef.h>
-#include <stdbool.h>
+#include <receiver433.h>
 #include <stdlib.h>
+#include <stdio.h>
 
 /* Driver Header files */
 #include <ti/drivers/timer/GPTimerCC26XX.h>
@@ -42,31 +39,22 @@
 // #include <ti/drivers/UART.h>
 // #include <ti/drivers/Watchdog.h>
 
-/* Debug Output */
-#include <ti/display/Display.h>
-
 /* Board Header file */
 #include "Board.h"
 
 /* BIOS Header file */
 #include <ti/sysbios/BIOS.h>
 /* Kernel Header files */
-#include <ti/sysbios/knl/Task.h>
-#include <ti/sysbios/knl/Queue.h>
 #include <ti/sysbios/knl/Clock.h>
-#include <ti/sysbios/knl/Event.h>
 #include <xdc/runtime/Types.h>
 
 /* Application header */
-#include "gptimer_capture.h"
 
-// Struct for messages
-typedef struct
-{
-  Queue_Elem    _elem;
-  uint64_t      message;
-} app_msg_t;
-
+/* Client app */
+// callbacks
+static const envValueCBs_t *pAppCBs = NULL;
+// Environment Value
+static environmentValue_t currentValue;
 
 /* PIN Configuration */
 PIN_State  pinState;
@@ -77,29 +65,9 @@ GPTimerCC26XX_Handle hCaptureTimer;
 GPTimerCC26XX_Handle hOverflowTimer;
 
 /* Periodic Clock */
-static Clock_Struct periodicClock;
-static Clock_Params periodicClockParams;
-static Clock_Handle hPeriodicClock;
-
-/* 57s Clock */
-static Clock_Struct c57Clock;
-static Clock_Params c57ClockParams;
-static Clock_Handle hC57Clock;
-
-/* Events */
-static Event_Struct eventStruct;
-static Event_Params eventParams;
-static Event_Handle hEvent;
-
-#define MESSAGE_EVT Event_Id_00
-
-// Task configuration
-#define GPTCapture_TASK_STACK_SIZE 1024
-Task_Struct gptCaptureTask;
-char gptTaskStack[GPTCapture_TASK_STACK_SIZE];
-// Declare the app task function
-static void GPTimerCapture_taskFxn(UArg a0, UArg a1);
-
+Clock_Struct periodicClock;
+Clock_Params periodicClockParams;
+Clock_Handle hPeriodicClock;
 
 /* App data */
 volatile uint32_t ledValue = CC2640R2_LAUNCHXL_PIN_LED_ON;
@@ -112,11 +80,6 @@ uint8_t nibble_count;
 uint8_t bit_mask = 0;
 uint8_t input = 0;
 uint64_t result = 0;
-
-/* Message Queue */
-// Queue object used for application messages.
-static Queue_Struct applicationMsgQ;
-static Queue_Handle hApplicationMsgQ;
 
 // pre-computed tick count values for all timing parameters
 uint32_t count_1_us;      //number of timer ticks per 1 us
@@ -131,24 +94,16 @@ uint32_t count_800_us;
 uint32_t count_1200_us;
 
 
-/* Display */
-
 /* App Fxn */
 void startTimers();
 void stopTimers();
+void resultToCurrentValue();
 
 static void clockHandler(UArg arg){
+    // start receiving
     startTimers();
+    // stop this clock; will be restarted when a message was received
     Clock_stop(hPeriodicClock);
-}
-
-static void c57Handler(UArg arg){
-    app_msg_t *pMsg = malloc( sizeof(app_msg_t));
-    if (pMsg) {
-        pMsg->message = 0xFF;
-        Queue_enqueue(hApplicationMsgQ ,&pMsg->_elem);
-        Event_post(hEvent, MESSAGE_EVT);
-    }
 }
 
 // Note these functions will be called in interrput handling context. Dontuse Display...
@@ -179,15 +134,6 @@ void inSync() {
     bit_mask = 0b00001000;
     result = 0;
 } //end inSync()
-
-void enqueueResult() {
-    app_msg_t *pMsg = malloc( sizeof(app_msg_t));
-    if (pMsg) {
-        pMsg->message = result;
-        Queue_enqueue(hApplicationMsgQ ,&pMsg->_elem);
-        Event_post(hEvent, MESSAGE_EVT);
-    } //endif
-} // end enqueueResult()
 
 /*
  * CB function for the overflow timer. It counts the timeout/overflow events.
@@ -273,8 +219,10 @@ void timerCaptureCB(GPTimerCC26XX_Handle handle, GPTimerCC26XX_IntMask interrupt
                 // This is a re-sync and a repeat will follow
                 if(nibble_count == 9) {
                     // a full message was received
-                    enqueueResult();
+                    resultToCurrentValue();
+                    // stop receiving
                     stopTimers();
+                    // start clock. After a period of time receiving will be started again.
                     Clock_start(hPeriodicClock);
                 }
                 // otherweise throw away any result or and start from the beginning
@@ -331,48 +279,29 @@ void stopTimers() {
     PIN_setOutputValue(hPIN, Board_PIN_LED0, ledValue);
 } //end stopTimers()
 
-/*
- * @brief   Task creation function for the user task.
- *
- * @param   None.
- *
- * @return  None.
- */
+// Note: char x[] = "1234567890ABCD";
+void resultToCurrentValue() {
+    currentValue.message = result;
+    currentValue.humidity = result & 0xFF;
+    currentValue.temperature = (result >> 12) & 0x0FFF;
+    if(currentValue.temperature & 0x0800) {
+        //Bit 11 ist set -> negative -> fill up bits 12-15 to make a signed short
+        currentValue.temperature |= 0xF000;
+    }
 
-void GPTimerCapture_createTask(void)
-{
-  Task_Params taskParams;
+    // tell the app if call backs are registered
+    if(pAppCBs && pAppCBs->pfnEnvValueChangeCB) {
+        // Note: we are passing on a pointer here;
+        // it needs to point to a static global value
+        pAppCBs->pfnEnvValueChangeCB(&currentValue);
+// Note: code left here as a pattern for logging
+//      pAppCBs->pfnLoggingMessageCB(x, sizeof(x));
+    } else {
+        // no app callbacks registered -> do nothing
+    }
+} // end messageToCurrentValue()
 
-  // Configure task
-  Task_Params_init(&taskParams);
-  taskParams.stack = gptTaskStack;
-  taskParams.stackSize = GPTCapture_TASK_STACK_SIZE;
-  taskParams.priority = 1;
-
-  Task_construct(&gptCaptureTask, GPTimerCapture_taskFxn, &taskParams, NULL);
-}
-
-/*
- *  ======== mainThread ========
- *  POSIX thread function signature
-void *GPTimerCapture_mainThread(void *arg0)
- */
-static void GPTimerCapture_taskFxn(UArg a0, UArg a1) {
-
-    /* Init Display */
-    Display_Handle hDisplay;
-    hDisplay = Display_open(Display_Type_UART, NULL);
-    Display_printf(hDisplay, 0, 0, "Starting main thread");
-
-    /* Events */
-    Event_Params_init(&eventParams); // use the default params
-    Event_construct(&eventStruct, &eventParams);
-    hEvent = Event_handle(&eventStruct);
-
-    /* Message Queue */
-    // Initialize queue for application messages.
-    Queue_construct(&applicationMsgQ, NULL);
-    hApplicationMsgQ = Queue_handle(&applicationMsgQ);
+receiver433_error_t Receiver433_start() {
 
     /* Periodic Clock */
     Clock_Params_init(&periodicClockParams);
@@ -380,13 +309,6 @@ static void GPTimerCapture_taskFxn(UArg a0, UArg a1) {
     periodicClockParams.startFlag = FALSE; // Clock_start required to start the clock
     Clock_construct(&periodicClock, clockHandler, 55000*(1000/Clock_tickPeriod), &periodicClockParams);
     hPeriodicClock = Clock_handle(&periodicClock);
-
-    /* 57 sec Clock */
-    Clock_Params_init(&c57ClockParams);
-    c57ClockParams.period = 57000*(1000/Clock_tickPeriod); // periodic clock
-    c57ClockParams.startFlag = TRUE; // clock will start right away
-    Clock_construct(&c57Clock, c57Handler, 57000*(1000/Clock_tickPeriod), &c57ClockParams); // timout = 0; start right without delay
-    hC57Clock = Clock_handle(&c57Clock);
 
     /* Open access to PIN / GPIO */
     const PIN_Config gptPinInitTable[] = {
@@ -398,8 +320,7 @@ static void GPTimerCapture_taskFxn(UArg a0, UArg a1) {
     // Get handle to this collection of pins
     hPIN = PIN_open(&pinState, gptPinInitTable);
     if (hPIN == NULL) {
-        Display_printf(hDisplay, 0, 0, "Failed to open PINs");
-        Task_exit();
+        return RCV433_ERROR_PIN;
     }
 
     /* Init and Configure Timer */
@@ -411,8 +332,7 @@ static void GPTimerCapture_taskFxn(UArg a0, UArg a1) {
     params.debugStallMode = GPTimerCC26XX_DEBUG_STALL_OFF;
     hCaptureTimer = GPTimerCC26XX_open(CC2640R2_LAUNCHXL_GPTIMER0A, &params);
     if(hCaptureTimer == NULL) {
-        Display_printf(hDisplay, 0, 0, "Failed to open capture timer");
-        Task_exit();
+        return RCV433_ERROR_CAPTURE_TIMER;
     }
 
     params.width = GPT_CONFIG_32BIT;
@@ -421,15 +341,20 @@ static void GPTimerCapture_taskFxn(UArg a0, UArg a1) {
     params.debugStallMode = GPTimerCC26XX_DEBUG_STALL_OFF;
     hOverflowTimer = GPTimerCC26XX_open( CC2640R2_LAUNCHXL_GPTIMER1A, &params );
     if( hOverflowTimer == NULL ) {
-        Display_printf(hDisplay, 0, 0, "Failed to open overflow timer");
-        Task_exit();
+        return RCV433_ERROR_OVERFLOW_TIMER;
     }
 
     Types_FreqHz  freq;
     BIOS_getCpuFreq(&freq);
-#ifdef DEBUG
-    Display_printf(hDisplay, 0, 0, "%d Freq Hz", freq.lo);
-#endif
+
+//    if(pAppCBs && pAppCBs->pfnLoggingMessageCB) {
+//        /* Logging Buffer */
+//        static char logFrequency[] = "000000000000 Freq Hz";
+//        // Note: we are passing on a pointer here;
+//        // it needs to point to a static global value
+//        sprintf(logFrequency, "%d Freq Hz", freq.lo);
+//        pAppCBs->pfnLoggingMessageCB(logFrequency, sizeof(logFrequency));
+//    }
 
     count_1_us  = (freq.lo / 1000000);
     count_380_us   = count_1_us * 380;
@@ -442,56 +367,45 @@ static void GPTimerCapture_taskFxn(UArg a0, UArg a1) {
     count_800_us   = count_1_us * 800;
     count_1200_us  = count_1_us * 1200;
 
-#ifdef DEBUG
-    Display_printf(hDisplay, 0, 0, "%d t_p_us", count_1_us);
-    Display_printf(hDisplay, 0, 0, "%d count_4000_us", count_1_us * 4000);
-    Display_printf(hDisplay, 0, 0, "%d count_2000_us", count_1_us * 2000);
-    Display_printf(hDisplay, 0, 0, "%d count_1000_us", count_1_us * 1000);
-#endif
-
     const GPTimerCC26XX_Value loadVal = 0xFFFFFF;
     // Configure the capture timer GPT1A as 24 bit timer
     GPTimerCC26XX_setLoadValue(hCaptureTimer, loadVal);
     // Configure timer #2 as 24 bit timer
-    // Note timer 2 is used to create overflow signals.
-    // The capture timer cannot generate overflow interrupts.
+    // Timer 2 is only used to create overflow interrupts
+    // as capture timer cannot generate overflow interrupts
+    // in capture mode
     GPTimerCC26XX_setLoadValue(hOverflowTimer, loadVal);
 
     // Set the input pin for the capture timer
     GPTimerCC26XX_PinMux pinMux = GPTimerCC26XX_getPinMux(hCaptureTimer);
-#ifdef DEBUG
-    Display_printf(hDisplay, 0, 0, "pinMux: %d", pinMux);
-#endif
     PINCC26XX_setMux(hPIN, PIN_ID(23), pinMux);
     GPTimerCC26XX_registerInterrupt(hCaptureTimer, timerCaptureCB, GPT_INT_CAPTURE );
     GPTimerCC26XX_registerInterrupt(hOverflowTimer, timerOverflowCB, GPT_INT_TIMEOUT );
+
+    // start receiving
     startTimers();
 
-    uint32_t events;
-    while (1) {
-        /* Wait for Message event */
-        events = Event_pend(hEvent, MESSAGE_EVT, 0, BIOS_WAIT_FOREVER);
-        ASSERT(events == MESSAGE_EVT);
+    return RCV433_OK;
+} // end receiver433_start()
 
-        while(!Queue_empty(hApplicationMsgQ)) {
-            app_msg_t *pMsg = Queue_dequeue(hApplicationMsgQ);
-            if( pMsg != NULL ) {
-                if (pMsg->message == 0xFF)
-                {
-                    Display_printf(hDisplay, 0, 0, "----------");
-                } else {
-                    Display_printf(hDisplay, 0, 0, "%08lx%08lx", (uint32_t)(pMsg->message >> 32), (uint32_t)pMsg->message);
-                }
-                free(pMsg);
-            } //endif
-        } //end while Queue not empty
-    } // end while(1)
-
-    // The following cleanup code is unreachable; put it here fore safety
-#pragma diag_suppress=112
-    Display_printf(hDisplay, 0, 0, "Task Terminated");
-    Display_close(hDisplay);
+void Receiver433_stop() {
     PIN_close(hPIN);
     GPTimerCC26XX_close(hCaptureTimer);
     GPTimerCC26XX_close(hOverflowTimer);
-} // end mainThread()
+} //end receiver433_stop()
+
+/*
+ * Registers app callback functions to call when an exposed environment value changes
+ */
+bool Receiver433_RegisterAppCBs(const envValueCBs_t* appCBs) {
+    bool result;
+    if ( appCBs ) {
+      // Note: just overwrite
+      pAppCBs = appCBs;
+      result = true;
+    } else {
+      result = false;
+    } //endif
+    return result;
+} //end Receiver433_RegisterAppCBs()
+
