@@ -29,10 +29,14 @@ typedef struct {
 // Callback when an exposed environment value has changed
 typedef void (*envValueChange_t)(environmentValue_t *newValue);
 typedef void (*loggingMessage_t)(char* message, int len);
+typedef void (*batteryMessage_t)(uint16_t battery);
+typedef void (*errorMessage_t)(uint8_t error);
 
 typedef struct {
     envValueChange_t pfnEnvValueChangeCB;  // Called when temperature value changes
     loggingMessage_t pfnLoggingMessageCB;  // Called when rcv433 wants to log a message
+    batteryMessage_t pfnBatteryMessageCB;  // Called when a battery message is received
+    errorMessage_t   pfnErrorMessageCB;    // Called when a error message is received
 } envValueCBs_t;
 
 // Return Codes

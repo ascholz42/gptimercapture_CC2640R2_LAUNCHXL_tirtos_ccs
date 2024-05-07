@@ -64,6 +64,8 @@
 typedef enum {
     VALUE_MSG   = 0,
     LOGGING_MSG = 1,
+    BATTERY_MSG = 2,
+    ERROR_MSG   = 3,
 } messageType_t;
 
 // Struct for messages
@@ -73,6 +75,9 @@ typedef struct
   messageType_t      msgType;
   environmentValue_t *envValue;
   char               *loggingString;
+  int                loggingLen;
+  uint16_t           battery;
+  uint8_t            error;
 } app_msg_t;
 
 /* 57s Clock */
@@ -104,11 +109,15 @@ static Queue_Handle hApplicationMsgQ;
 
 /* App callback functions */
 void envValueChangeCB(environmentValue_t *newValue); // will be called when an envirnoment value changes
-void loggingMessageCB(char *message);                // will be called when something neeeds to be logged
+void loggingMessageCB(char *message, int len);       // will be called when something neeeds to be logged
+void batteryMessageCB(uint16_t battery);
+void errorMessageCB(uint8_t error);
 
 const envValueCBs_t appCBs = {
   .pfnEnvValueChangeCB = envValueChangeCB,
   .pfnLoggingMessageCB = loggingMessageCB,
+  .pfnBatteryMessageCB = batteryMessageCB,
+  .pfnErrorMessageCB   = errorMessageCB,
 };
 
 /*
@@ -127,18 +136,43 @@ void envValueChangeCB(environmentValue_t *newValue) {
         Queue_enqueue(hApplicationMsgQ ,&pMsg->_elem);
         Event_post(hEvent, MESSAGE_EVT);
     } //endif
-} // end enqueueResult()
+} // end envValueChangeCB()
 
-void loggingMessageCB(char *message) {
+void loggingMessageCB(char *message, int len) {
     app_msg_t *pMsg = malloc( sizeof(app_msg_t));
     if (pMsg) {
         pMsg->msgType = LOGGING_MSG;
         pMsg->envValue = NULL;
         pMsg->loggingString = message;
+        pMsg->loggingLen = len;
         Queue_enqueue(hApplicationMsgQ ,&pMsg->_elem);
         Event_post(hEvent, MESSAGE_EVT);
     } //endif
-} // end enqueueResult()
+} // end loggingMessageCB()
+
+void batteryMessageCB(uint16_t battery) {
+    app_msg_t *pMsg = malloc( sizeof(app_msg_t));
+    if (pMsg) {
+        pMsg->msgType = BATTERY_MSG;
+        pMsg->envValue = NULL;
+        pMsg->loggingString = NULL;
+        pMsg->battery = battery;
+        Queue_enqueue(hApplicationMsgQ ,&pMsg->_elem);
+        Event_post(hEvent, MESSAGE_EVT);
+    } //endif
+} // end batteryMessageCB()
+
+void errorMessageCB(uint8_t error) {
+    app_msg_t *pMsg = malloc( sizeof(app_msg_t));
+    if (pMsg) {
+        pMsg->msgType = ERROR_MSG;
+        pMsg->envValue = NULL;
+        pMsg->loggingString = NULL;
+        pMsg->error = error;
+        Queue_enqueue(hApplicationMsgQ ,&pMsg->_elem);
+        Event_post(hEvent, MESSAGE_EVT);
+    } //endif
+} // end errorMessageCB()
 
 /*
  * @brief   Task creation function for the user task.
@@ -208,10 +242,22 @@ static void Receiver_taskFxn(UArg a0, UArg a1) {
             while(!Queue_empty(hApplicationMsgQ)) {
                 app_msg_t *pMsg = Queue_dequeue(hApplicationMsgQ);
                 if( (pMsg != NULL) && (pMsg->msgType == VALUE_MSG)) {
-                    Display_printf(hDisplay, 0, 0, "%08lx%08lx", (uint32_t)(pMsg->envValue->message >> 32), (uint32_t)pMsg->envValue->message);
-                    Display_printf(hDisplay, 0, 0, "%d %d", pMsg->envValue->humidity, pMsg->envValue->temperature);
+                    // Environment value(s) message
+                    Display_printf(hDisplay, 0, 0, "%08lx%08lx %d %d",
+                                   (uint32_t)(pMsg->envValue->message >> 32),
+                                   (uint32_t)pMsg->envValue->message,
+                                   pMsg->envValue->humidity,
+                                   pMsg->envValue->temperature);
                 } else if ((pMsg != NULL) && (pMsg->msgType == LOGGING_MSG)) {
+                    // Logging message
+                    // TODO: add length check
                     Display_printf(hDisplay, 0, 0, "%s", pMsg->loggingString);
+                } else if ((pMsg != NULL) && (pMsg->msgType == BATTERY_MSG)) {
+                    // Battery message
+                    Display_printf(hDisplay, 0, 0, "Battery message %d", pMsg->battery);
+                } else if ((pMsg != NULL) && (pMsg->msgType == ERROR_MSG)) {
+                    // Error message
+                    Display_printf(hDisplay, 0, 0, "Error message %02x", pMsg->error);
                 }
                 free(pMsg);
             } //end while Queue not empty
