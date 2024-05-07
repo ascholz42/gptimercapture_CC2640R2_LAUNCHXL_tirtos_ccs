@@ -29,6 +29,7 @@
 #include <receiver433.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <stdbool.h>
 
 /* Driver Header files */
 #include <ti/drivers/timer/GPTimerCC26XX.h>
@@ -97,7 +98,7 @@ uint32_t count_1200_us;
 /* App Fxn */
 void startTimers();
 void stopTimers();
-void resultToCurrentValue();
+bool resultToCurrentValue(uint8_t p_numNibbles);
 
 static void clockHandler(UArg arg){
     // start receiving
@@ -216,14 +217,11 @@ void timerCaptureCB(GPTimerCC26XX_Handle handle, GPTimerCC26XX_IntMask interrupt
                 // out of sync
                 outOfSync();
             } else {
+                bool stopReceiving = false;
                 // This is a re-sync and a repeat will follow
-                if(nibble_count == 9) {
+                if((nibble_count == 9) || (nibble_count == 6) || (nibble_count == 4)) {
                     // a full message was received
-                    resultToCurrentValue();
-                    // stop receiving
-                    stopTimers();
-                    // start clock. After a period of time receiving will be started again.
-                    Clock_start(hPeriodicClock);
+                    stopReceiving = resultToCurrentValue(nibble_count);
                 }
                 // otherweise throw away any result or and start from the beginning
 
@@ -233,7 +231,13 @@ void timerCaptureCB(GPTimerCC26XX_Handle handle, GPTimerCC26XX_IntMask interrupt
                 } else {
                     // terminating long LOW
                     outOfSync();
-                }
+                    if( stopReceiving ) {
+                        // stop receiving
+                        stopTimers();
+                        // start clock. After a period of time receiving will be started again.
+                        Clock_start(hPeriodicClock);
+                    }
+                } // endif pulse_width < 4300 us
             } // endif width
         } //endif pos edge
     } // endif synced
@@ -279,27 +283,45 @@ void stopTimers() {
     PIN_setOutputValue(hPIN, Board_PIN_LED0, ledValue);
 } //end stopTimers()
 
-// Note: char x[] = "1234567890ABCD";
-void resultToCurrentValue() {
-    currentValue.message = result;
-    currentValue.humidity = result & 0xFF;
-    currentValue.temperature = (result >> 12) & 0x0FFF;
-    if(currentValue.temperature & 0x0800) {
-        //Bit 11 ist set -> negative -> fill up bits 12-15 to make a signed short
-        currentValue.temperature |= 0xF000;
-    }
 
-    // tell the app if call backs are registered
-    if(pAppCBs && pAppCBs->pfnEnvValueChangeCB) {
-        // Note: we are passing on a pointer here;
-        // it needs to point to a static global value
-        pAppCBs->pfnEnvValueChangeCB(&currentValue);
-// Note: code left here as a pattern for logging
-//      pAppCBs->pfnLoggingMessageCB(x, sizeof(x));
-    } else {
-        // no app callbacks registered -> do nothing
-    }
-} // end messageToCurrentValue()
+bool resultToCurrentValue(uint8_t p_numNibbles) {
+    bool returnValue = false;
+    if( p_numNibbles == 9 ) {
+        currentValue.message = result;
+        currentValue.humidity = result & 0xFF;
+        currentValue.temperature = (result >> 12) & 0x0FFF;
+        if(currentValue.temperature & 0x0800) {
+            //Bit 11 ist set -> negative -> fill up bits 12-15 to make a signed short
+            currentValue.temperature |= 0xF000;
+        }
+        // tell the app if call backs are registered
+        if(pAppCBs && pAppCBs->pfnEnvValueChangeCB) {
+            // Note: we are passing on a pointer here;
+            // it needs to point to a static global value
+            pAppCBs->pfnEnvValueChangeCB(&currentValue);
+            // Note: code left here as a pattern for logging
+            //      pAppCBs->pfnLoggingMessageCB(x, sizeof(x));
+        } // endif
+        returnValue = false; // do not stop receiving
+    } //end 9 nibbles
+    else if( p_numNibbles == 6) {
+        // Message with battery voltage
+        uint16_t batteryVoltage = result & 0xFFFF;
+        if( pAppCBs && pAppCBs->pfnBatteryMessageCB ) {
+            pAppCBs->pfnBatteryMessageCB(batteryVoltage);
+        }
+        returnValue = false; // do not stop receiving
+    } //endif 6 nibbles
+    else if( p_numNibbles == 4){
+        // This is a message with the error status
+        uint8_t errorStatus = result & 0xFF;
+        if( pAppCBs && pAppCBs->pfnErrorMessageCB ) {
+            pAppCBs->pfnErrorMessageCB(errorStatus);
+        }
+        returnValue = true; // this was the last message, stop receiving
+    } //endif 4 nibbles
+    return returnValue;
+} // end resultToCurrentValue()
 
 receiver433_error_t Receiver433_start() {
 
