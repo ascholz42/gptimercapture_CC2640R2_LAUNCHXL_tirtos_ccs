@@ -108,10 +108,10 @@ static Queue_Handle hApplicationMsgQ;
 /* Display */
 
 /* App callback functions */
-void envValueChangeCB(environmentValue_t *newValue); // will be called when an envirnoment value changes
-void loggingMessageCB(char *message, int len);       // will be called when something neeeds to be logged
-void batteryMessageCB(uint16_t battery);
-void errorMessageCB(uint8_t error);
+void envValueChangeCB(environmentValue_t *newValue);    // will be called when an environment value changes
+void loggingMessageCB(char *message, int len);       // will be called when something needs to be logged
+void batteryMessageCB(uint16_t batteryVoltage);         // called when a message on battery voltage was received
+void errorMessageCB(uint8_t errorStatus);               // called when a message on error status is received
 
 const envValueCBs_t appCBs = {
   .pfnEnvValueChangeCB = envValueChangeCB,
