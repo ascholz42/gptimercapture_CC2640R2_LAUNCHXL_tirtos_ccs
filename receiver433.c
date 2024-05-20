@@ -55,7 +55,9 @@
 // callbacks
 static const envValueCBs_t *pAppCBs = NULL;
 // Environment Value
-static environmentValue_t currentValue;
+static environmentValue_t currentEnvironmentValue;
+// Battery Voltage
+static uint16_t currentBatteryVoltage;
 
 /* PIN Configuration */
 PIN_State  pinState;
@@ -285,42 +287,47 @@ void stopTimers() {
 
 
 bool resultToCurrentValue(uint8_t p_numNibbles) {
-    bool returnValue = false;
-    if( p_numNibbles == 9 ) {
-        currentValue.message = result;
-        currentValue.humidity = result & 0xFF;
-        currentValue.temperature = (result >> 12) & 0x0FFF;
-        if(currentValue.temperature & 0x0800) {
-            //Bit 11 ist set -> negative -> fill up bits 12-15 to make a signed short
-            currentValue.temperature |= 0xF000;
-        }
-        // tell the app if call backs are registered
-        if(pAppCBs && pAppCBs->pfnEnvValueChangeCB) {
-            // Note: we are passing on a pointer here;
-            // it needs to point to a static global value
-            pAppCBs->pfnEnvValueChangeCB(&currentValue);
-            // Note: code left here as a pattern for logging
-            //      pAppCBs->pfnLoggingMessageCB(x, sizeof(x));
-        } // endif
-        returnValue = false; // do not stop receiving
-    } //end 9 nibbles
-    else if( p_numNibbles == 6) {
-        // Message with battery voltage
-        uint16_t batteryVoltage = result & 0xFFFF;
-        if( pAppCBs && pAppCBs->pfnBatteryMessageCB ) {
-            pAppCBs->pfnBatteryMessageCB(batteryVoltage);
-        }
-        returnValue = false; // do not stop receiving
-    } //endif 6 nibbles
-    else if( p_numNibbles == 4){
-        // This is a message with the error status
-        uint8_t errorStatus = result & 0xFF;
-        if( pAppCBs && pAppCBs->pfnErrorMessageCB ) {
-            pAppCBs->pfnErrorMessageCB(errorStatus);
-        }
-        returnValue = true; // this was the last message, stop receiving
-    } //endif 4 nibbles
-    return returnValue;
+  bool returnValue = false;
+  if( p_numNibbles == 9 ) {
+    if( currentEnvironmentValue.message != result ) {
+      currentEnvironmentValue.message = result;
+      currentEnvironmentValue.humidity = result & 0xFF;
+      currentEnvironmentValue.temperature = (result >> 12) & 0x0FFF;
+      if(currentEnvironmentValue.temperature & 0x0800) {
+        //Bit 11 ist set -> negative -> fill up bits 12-15 to make a signed short
+        currentEnvironmentValue.temperature |= 0xF000;
+      }
+      // tell the app if call backs are registered
+      if(pAppCBs && pAppCBs->pfnEnvValueChangeCB) {
+        // Note: we are passing on a pointer here;
+        // it needs to point to a static global value
+        pAppCBs->pfnEnvValueChangeCB(&currentEnvironmentValue);
+        // Note: code left here as a pattern for logging
+        //      pAppCBs->pfnLoggingMessageCB(x, sizeof(x));
+      } // endif
+    }
+    returnValue = false; // do not stop receiving
+  } //end 9 nibbles
+  else if( p_numNibbles == 6 ) {
+    // Message with battery voltage
+    uint16_t batteryVoltage = result & 0xFFFF;
+    if( currentBatteryVoltage != batteryVoltage ) {
+      currentBatteryVoltage = batteryVoltage;
+      if( pAppCBs && pAppCBs->pfnBatteryMessageCB ) {
+        pAppCBs->pfnBatteryMessageCB(batteryVoltage);
+      }
+    }
+    returnValue = false; // do not stop receiving
+  } //endif 6 nibbles
+  else if( p_numNibbles == 4){
+    // This is a message with the error status
+    uint8_t errorStatus = result & 0xFF;
+    if( (errorStatus != 0x00) && pAppCBs && pAppCBs->pfnErrorMessageCB ) {
+      pAppCBs->pfnErrorMessageCB(errorStatus);
+    }
+    returnValue = true; // this was the last message, stop receiving
+  } //endif 4 nibbles
+  return returnValue;
 } // end resultToCurrentValue()
 
 receiver433_error_t Receiver433_start() {
